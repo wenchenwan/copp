@@ -75,7 +75,7 @@ fn main() -> Result<(), CoppError> {
     let (t_final, t_s) = s_to_t_topp2(&s, &a_socp, 0.0);
     // s_t is a uniform time grid of s(t) with dt = 1e-3s. This is useful for plotting and downstream control.
     let dt = 1e-3;
-    let s_t = t_to_s_topp2(
+    let s_t: Vec<f64> = t_to_s_topp2(
         &s,
         &a_socp,
         &t_s,
