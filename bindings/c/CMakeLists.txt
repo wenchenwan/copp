@@ -179,6 +179,7 @@ if(COPP_BUILD_EXAMPLES)
     add_copp_c_example(example_topp3_lp examples/topp3_lp.c)
     add_copp_c_example(example_topp3_socp examples/topp3_socp.c)
     add_copp_c_example(example_copp3_socp examples/copp3_socp.c)
+    add_copp_c_example(benchmark_timing examples/benchmark_timing.c)
 endif()
 
 if(COPP_INSTALL)

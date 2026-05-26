@@ -27,5 +27,6 @@ copp_path_from_waypoints(
 | `topp3_lp.c` | TOPP3 LP with Clarabel options |
 | `topp3_socp.c` | TOPP3 SOCP with Clarabel options |
 | `copp3_socp.c` | COPP3 SOCP with time plus thermal-energy objectives |
+| `benchmark_timing.c` | Wall-clock solve-time comparison across all solvers; see [`benchmark_timing.md`](benchmark_timing.md) |
 
 Algorithms not listed in the open-source availability table in the repository root README are not documented here as public C examples.
