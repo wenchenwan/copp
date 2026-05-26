@@ -1,5 +1,24 @@
 //! General shared definitions and numeric utilities for TOPP/COPP flows.
 //!
+//! # 模块功能概述
+//!
+//! 本模块提供跨求解层使用的轻量级公用原语：
+//!
+//! ## 插值策略枚举 `InterpolationMode`
+//! 描述轨迹后处理时的采样方式，供 `t_to_s_topp2` / `t_to_s_topp3` 使用：
+//! - `UniformTimeGrid(t0, dt, include_final)` — 均匀时间网格
+//! - `NonUniformTimeGrid(&[f64])` — 用户提供的非均匀时间序列
+//!
+//! ## 浮点近似比较 `approx_order`
+//! 避免直接用 `==` 比较 f64，使用混合容差判断大小关系：
+//! ```text
+//! threshold = max(abs_tol, rel_tol * max(|x1|, |x2|))
+//! if x1 - x2 > threshold  → Greater
+//! if x1 - x2 < -threshold → Less
+//! else                     → Equal
+//! ```
+//! 主要用于 `reach_set2.rs` 中 DP 步骤的可达集裁剪判断。
+//!
 //! # Method identity
 //! This module hosts lightweight, cross-cutting primitives that are reused by
 //! multiple solver/formulation layers, including:

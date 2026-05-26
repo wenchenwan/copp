@@ -1,9 +1,39 @@
-//! Shared Clarabel backend options for TOPP/COPP optimization solvers.  
-//! This module provides a unified configuration surface for all Clarabel-based backends in this crate (e.g., TOPP2-LP, COPP2-SOCP, TOPP3-LP/SOCP, COPP3-OPT).  
-//! Design goals:  
-//! - Keep one stable, user-facing option model across multiple solvers;  
-//! - Allow advanced users to pass raw `DefaultSettings<f64>` when needed;  
+//! Shared Clarabel backend options for TOPP/COPP optimization solvers.
+//! This module provides a unified configuration surface for all Clarabel-based backends in this crate (e.g., TOPP2-LP, COPP2-SOCP, TOPP3-LP/SOCP, COPP3-OPT).
+//! Design goals:
+//! - Keep one stable, user-facing option model across multiple solvers;
+//! - Allow advanced users to pass raw `DefaultSettings<f64>` when needed;
 //! - Prevent duplicated console output by coordinating crate-level `Verbosity` and Clarabel's internal `settings.verbose`.
+//!
+//! # 模块在系统中的位置
+//!
+//! 本模块是所有 Clarabel 求解器的**统一配置层**，被 COPP2-SOCP、TOPP3-LP、
+//! TOPP3-SOCP、COPP3-SOCP 等后端共同引用。
+//!
+//! ## 核心类型
+//! - `ClarabelOptions` — 运行时选项（verbosity + clarabel 设置 + 状态接受策略）
+//! - `ClarabelOptionsBuilder` — Builder 模式构造 `ClarabelOptions`
+//!
+//! ## 状态接受策略（`is_allow`）
+//! Clarabel 求解器会返回多种终止状态，本模块通过 `allow_*` 开关控制哪些状态
+//! 视为"成功"，从而决定是否从解向量中提取 `a` / `(a,b)` 轮廓：
+//! ```text
+//! Solved             → 始终接受
+//! AlmostSolved       → allow_almost_solved 为 true 时接受（推荐在生产中开启）
+//! MaxIterations      → allow_max_iterations 为 true 时接受
+//! MaxTime            → allow_max_time 为 true 时接受
+//! InsufficientProgress → allow_insufficient_progress 为 true 时接受
+//! 其他               → 始终拒绝
+//! ```
+//!
+//! ## 解提取辅助函数
+//! - `clarabel_to_copp2_solution(s_len, solution)` — 从 COPP2 解向量提取 `a` 轮廓
+//! - `clarabel_to_copp3_solution(x, s, num_stationary)` — 从 COPP3 解向量提取 `(a, b)` 轮廓，
+//!   并在静止段边界按公式补全
+//!
+//! ## 输出调试层协调
+//! 若 `verbosity <= Summary`，构建时强制 `clarabel_settings.verbose = false`，
+//! 避免 Clarabel 内部日志与本 crate 日志交叉输出。
 
 use crate::copp::copp3::formulation::set_ab_stationary_topp3;
 use crate::diag::{CoppError, Verbosity};

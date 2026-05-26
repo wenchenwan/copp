@@ -1,4 +1,27 @@
 //! Diagnostics utilities for TOPP algorithms.
+//!
+//! # 模块功能概述
+//!
+//! 本模块提供跨整个求解库统一使用的日志/诊断基础设施：
+//!
+//! ## 核心类型
+//! - `Verbosity` — 四级日志开关：`Silent < Summary < Debug < Trace`
+//! - `VerbosityOutput` — 日志目标：`Println`（控制台）/ `Log`（log facade）/ `File`
+//! - `Verboser` trait — 可插拔日志接口，各求解核心函数通过泛型参数接受具体实现：
+//!   - `SilentVerboser` — 无任何输出（零开销）
+//!   - `SummaryVerboser` — 仅记录生命周期里程碑和总耗时
+//!   - `DebugVerboser` — 输出矩阵规模、阶段摘要
+//!   - `TraceVerboser` — 输出精细步骤差量和求解器快照
+//!
+//! ## 宏 `verbosity_log!`
+//! 用于在 `Verboser` 实现中按条件输出，避免格式化字符串的无效计算：
+//! ```rust,ignore
+//! crate::verbosity_log!(Verbosity::Summary, "started: s_len={}", s_len);
+//! ```
+//!
+//! ## Verbosity 与 Clarabel 的协调
+//! 构建 `ClarabelOptions` 时，若 `verbosity <= Summary`，则强制
+//! `clarabel_settings.verbose = false`，避免两层输出交叉。
 
 use std::fs::{File, OpenOptions, create_dir_all};
 use std::io::Write;

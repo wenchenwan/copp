@@ -1,7 +1,29 @@
-//! Objective definitions and shared validators for COPP2/COPP3.  
-//! Basic symbols (consistent with constraints):  
-//! - $a(s)=\dot s^2$, sampled as `a[k]=a(s_k)`.  
-//! - $b(s)=\ddot s$.  
+//! Objective definitions and shared validators for COPP2/COPP3.
+//!
+//! # 目标函数在系统中的位置
+//!
+//! 目标函数由 `CoppObjective` 枚举定义，只在 COPP 求解器（非 TOPP）中使用：
+//! ```text
+//! 用户定义 objectives = [CoppObjective::Time(1.0), CoppObjective::ThermalEnergy(0.1, &w)]
+//!   ↓
+//! Copp2ProblemBuilder::new(&robot, ..., &objectives).build()
+//!   ↓  validate_copp2_objectives()   检查权重非负、维度匹配
+//!   ↓
+//! Copp2Problem { objectives: &objectives, ... }
+//!   ↓
+//! copp2_socp() / copp3_socp()
+//!   └─ 将 objectives 转化为 Clarabel 的目标函数系数向量 q
+//!       Time:         q_k = w_t / sqrt(a_lin[k])    (对 a[k] 的线性化时间代价)
+//!       ThermalEnergy:q_k = w_e * sum_i(τ_i·ν_i)²  (力矩加权热能代价)
+//!       Linear:       q_k = w_l * alpha[k]            (用户自定义线性项)
+//! ```
+//!
+//! TOPP 求解器（topp2_ra / topp3_lp / topp3_socp）不接受 objectives，
+//! 隐式使用时间最优目标（贪心最大化 a[k]）。
+//!
+//! # Basic symbols (consistent with constraints)
+//! - $a(s)=\dot s^2$, sampled as `a[k]=a(s_k)`.
+//! - $b(s)=\ddot s$.
 //! - Path grid is `s[0], s[1], ..., s[n-1]` with `n = s.len()`.
 //!
 //! Discretization difference:  
@@ -23,28 +45,36 @@ use crate::diag::CoppError;
 /// - COPP2: `tau[i][k]` is the right-limit value $\boldsymbol{\tau}(s_k^+)$, i.e. computed on interval $[s_k, s_{k+1}]$ from `(a[k], a[k+1], b[k])`.  
 /// - COPP3: `tau[i][k]` is node value $\boldsymbol{\tau}(s_k)$, computed from `(a[k], b[k])`.
 pub enum CoppObjective<'a> {
-    /// Time objective.  
-    /// + Continuous: $J_{\mathrm{time}} = w_t\int_{0}^{t_f} 1 \mathrm{d}t = w_t\int_{s_0}^{s_f} \frac{1}{\sqrt{a(s)}} \mathrm{d}s$.  
-    /// + Discrete (COPP2): `J_time = 2*w_t*sum_{k=0}^{n-2} (s[k+1]-s[k])/(sqrt(a[k])+sqrt(a[k+1]))`.  
-    /// + Discrete (COPP3): `J_time = w_t*sum_k weight_a_time[k]/sqrt(a[k])`
+    /// 时间目标：最小化总运动时间。
+    ///
+    /// 权重 `w_t > 0`，值越大越重视时间最优。
+    /// 连续形式：J = w_t · ∫ ds/√a(s)
+    /// COPP2 离散化：J = 2w_t · Σ (s[k+1]-s[k]) / (√a[k]+√a[k+1])  （梯形积分）
+    /// COPP3 离散化：J = w_t · Σ weight_a_time[k] / √a[k]
     Time(f64),
-    /// Thermal-energy objective.  
-    /// + Continuous: $J_{\mathrm{th}} = w_e\int_{0}^{t_f} \sum_i(\tau_i(s)\nu_i)^2\mathrm{d}t = w_e\int_{s_0}^{s_f} \sum_i(\tau_i(s)\nu_i)^2\frac{1}{\sqrt{a(s)}}\mathrm{d}s$ where `nu_i = normalize[i]`.  
-    /// + Discrete (COPP2): `J_th = 2*w_e*sum_{k=0}^{n-2} (s[k+1]-s[k])/(sqrt(a[k])+sqrt(a[k+1])) * sum_i (tau[i][k]*normalize[i])^2`.  
-    /// + Discrete (COPP3): `J_th = w_e*sum_k weight_a_torque[k] * sum_i (tau[i][k]*normalize[i])^2`.
+
+    /// 热能目标：最小化电机发热（力矩平方×时间积分）。
+    ///
+    /// 参数：`(w_e, normalize)`，其中 `normalize[i]` 为第 i 轴的归一化系数 ν_i。
+    /// 连续形式：J = w_e · ∫ Σ_i (τ_i·ν_i)² / √a(s) ds
+    /// 适用场景：在时间最优基础上减少电机热损耗（COPP3 demo 默认组合目标之一）。
+    /// 注意：该目标需要 RobotTorque（逆动力学），仅在 COPP2/COPP3 中有效。
     ThermalEnergy(f64, &'a [f64]),
-    /// Total-variation of torque objective.  
-    /// + Continuous: $J_{\mathrm{tv}} = w_v\sum_i \int_{0}^{t_f} \left|\frac{d\tau_i}{\mathrm{d}s}(s)\right|\nu_i\mathrm{d}t = w_v\sum_i \int_{s_0}^{s_f} \left|\frac{d\tau_i}{\mathrm{d}s}(s)\right|\nu_i\mathrm{d}s$.
-    /// + Discrete:  `J_tv = w_v*sum_i sum_k |tau[i][k+1]-tau[i][k]|*normalize[i]`
+
+    /// 力矩全变差目标：最小化力矩变化幅度，使运动更平滑。
+    ///
+    /// 连续形式：J = w_v · Σ_i ∫ |dτ_i/ds| · ν_i ds
+    /// 离散化：J = w_v · Σ_i Σ_k |τ_i[k+1]-τ_i[k]| · ν_i
+    /// 适用场景：抑制力矩突变，降低机械冲击。
     TotalVariationTorque(f64, &'a [f64]),
-    /// Linear objective over `a` and `b`.  
-    /// + Continuous: $J_{\mathrm{lin}} = w_l\int_{s_0}^{s_f}(\alpha(s)a(s)+\beta(s)b(s))\mathrm{d}s$.
-    /// + Discrete (COPP2):
-    ///   - `alpha.len()==n`, `beta.len()==n-1`
-    ///   - `J_lin = w_l*( sum_{k=0}^{n-1} alpha[k]*a[k] + sum_{k=0}^{n-2} beta[k]*b[k] )`
-    /// + Discrete (COPP3):
-    ///   - `alpha.len()==beta.len()==n`
-    ///   - `J_lin = w_l*sum_{k=0}^{n-1} (alpha[k]*a[k] + beta[k]*b[k])`
+
+    /// 用户自定义线性目标：对 a[k] 和 b[k] 的加权求和。
+    ///
+    /// 参数：`(w_l, alpha, beta)`
+    /// 连续形式：J = w_l · ∫ (α(s)·a(s) + β(s)·b(s)) ds
+    /// COPP2：alpha.len()==n, beta.len()==n-1
+    /// COPP3：alpha.len()==beta.len()==n
+    /// 适用场景：嵌入自定义代价（如能量代理、位置偏差等）。
     Linear(f64, &'a [f64], &'a [f64]),
 }
 

@@ -1,5 +1,34 @@
 //! Problem data models and builders for TOPP3/COPP3.
 //!
+//! # 模块职责与调用流程
+//!
+//! ## TOPP3 的两次 SCP 迭代过程
+//! ```text
+//! 【第0次】topp2_ra() → a_ref: Vec<f64>   (2阶最优解，作为线性化参考点)
+//!
+//! 【第1次 SCP 迭代】
+//! Topp3ProblemBuilder::new(&mut robot, 0, &a_ref, (0.0,0.0), (0.0,0.0))
+//!   ↓  .build_with_linearization()
+//!        ├─ check_boundary_state_copp3_valid()  边界合法性（a,b均非负）
+//!        ├─ constraints.linearize_constraint_3order_with_floor(&a_ref, ...)
+//!        │    在每个采样点 k，将非线性急动度约束
+//!        │    √a·(g_a·a + g_b·b + g_c·c + g_d) ≤ g_max
+//!        │    线性化为关于 a[k] 的仿射约束（写入 jerk_a_linear / jerk_max_linear）
+//!        └─ determine_num_stationary_pair()  确定静止段长度
+//!   ↓
+//! Topp3Problem（只读约束引用 + 线性化系数已就位）
+//!   ↓
+//! topp3_lp(problem, opts) / topp3_socp(problem, opts)
+//!   → (a1, b1, num_stat1)
+//!
+//! 【第2次 SCP 迭代】用 a1 替换 a_ref 重复上述过程
+//!   → (a2, b2, num_stat2)   (更接近 3 阶最优解)
+//! ```
+//!
+//! ## COPP3 与 TOPP3 的区别
+//! Copp3ProblemBuilder 额外保存 &mut robot（需要 RobotTorque 接口）
+//! 和 objectives 列表，以支持时间+热能等多目标组合。
+//!
 //! # Notation policy (math + code)
 //! To help users map paper notation to API fields without ambiguity,
 //! this module follows a dual notation style:
@@ -202,6 +231,25 @@ impl<'a> Topp3ProblemBuilder<'a> {
     /// Build a TOPP3 problem and linearize third-order constraints in one step.
     ///
     /// This validates boundaries/interval/floor first, then writes linearized jerk buffers.
+    ///
+    /// # Linearization of third-order jerk constraints
+    ///
+    /// Raw (nonlinear) jerk row at station k:
+    ///   √a[k] · (g_a·a[k] + g_b·b[k] + g_c·c[k] + g_d) ≤ g_max
+    ///
+    /// where c[k] = db/ds ≈ (b[k+1]-b[k])/(s[k+1]-s[k]) is the LP/SOCP decision variable.
+    ///
+    /// Linearize around reference a_lin = a_linearization[k] (from TOPP2-RA):
+    ///   √a ≈ √a_lin + (a - a_lin) / (2√a_lin)
+    ///
+    /// Substituting and collecting terms:
+    ///   (g_a + g_max/(2·a_lin^(3/2)))·a[k] + g_b·b[k] + g_c·c[k] ≤ 3/2·g_max/√a_lin - g_d
+    ///
+    /// The linearized coefficient for a becomes:  h_a = g_a + g_max/(2·a_lin^(3/2))
+    /// The linearized RHS becomes:                h_max = 3/2·g_max/√a_lin - g_d
+    ///
+    /// Near a_lin ≈ 0 (stationary boundary), a_linearization_floor prevents division by zero:
+    ///   a_lin_eff = max(a_lin, a_linearization_floor)
     pub fn build_with_linearization(self) -> Result<Topp3Problem<'a>, CoppError> {
         check_boundary_state_copp3_valid(self.a_boundary, self.b_boundary)?;
         if self.a_linearization.is_empty() {

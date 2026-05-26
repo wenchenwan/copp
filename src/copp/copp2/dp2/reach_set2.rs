@@ -1,5 +1,26 @@
 //! Reachable-set construction for second-order path parameterization.
 //!
+//! # 模块职责与调用流程
+//!
+//! ## 在 TOPP2-RA 中的位置
+//! ```text
+//! topp2_ra()
+//!   └─ reach_set2_backward(problem, options)       ← 本模块
+//!        └─ reach_set2_core::<false>(...)
+//!             ├─ 边界可行性检查（a_start/a_final ≤ amax）
+//!             ├─ 后向 DP 传播（k = n-1 → 0）
+//!             │   ├─ 填充 2 阶约束行：fill_acc_topp2::<true>(&mut a_b, idx_s)
+//!             │   ├─ 2D LP：lp_2d_incre_max_y() 求当前站可行的 a[k] 上界
+//!             │   └─ 裁剪：取与 amax[k] 的交集
+//!             └─ 返回 ReachSet2 { a_max, a_min }
+//!        ↓（仅后向模式返回）
+//!   └─ 前向贪心（topp2_ra.rs）：a[k] = a_max_after_clipping
+//!
+//! ## 在 reach_set2（可达集分析）中的位置
+//! reach_set2_bidirectional() 在后向基础上再做前向裁剪，
+//! 得到同时满足起点和终点边界的最紧区间。
+//! 可用于可行性验证和约束收紧。
+//!
 //! # Method identity
 //! This module implements the reachable-set stage via **Reachability Analysis (RA)** in
 //! a **Dynamic Programming (DP)** compatible form, which can be used by:
@@ -10,12 +31,6 @@
 //! On a path grid `s[0..=n]`:
 //! - `a[k]` denotes $\dot{s}_k^2$ (nonnegative scalar state);
 //! - reachable interval at station `k` is `[a_min[k], a_max[k]]`.
-//!
-//! # High-level pipeline
-//! 1. Validate boundary feasibility at both interval ends.
-//! 2. Backward pass from terminal boundary to construct feasible intervals.
-//! 3. Optional forward clipping (when bidirectional mode is enabled) to enforce start boundary.
-//! 4. Return interval arrays `a_min` / `a_max` for downstream solvers.
 
 use crate::copp::copp2::formulation::Topp2Problem;
 use crate::copp::{ApproxOrdering, approx_order};
@@ -180,13 +195,24 @@ fn reach_set2_core<const BIDIRECTION: bool>(
         return Err(err);
     }
 
-    // Step 1. Initialize a_max and a_min at s_final
+    // Step 1. Initialize a_max and a_min at s_final.
+    // The terminal boundary condition pins a[n] to the exact value a_final.
+    // All interior stations start with the broadest feasible range: [0, +∞).
     let n = idx_s_final - idx_s_start;
     let mut a_max = vec![f64::INFINITY; n + 1];
     let mut a_min = vec![0.0; n + 1];
     *a_max.last_mut().unwrap() = problem.a_boundary.1;
     *a_min.last_mut().unwrap() = problem.a_boundary.1;
-    // Step 2. Backward pass
+
+    // Step 2. Backward pass: propagate reachability from s_final toward s_start.
+    //
+    // At each station k (going from n-1 down to 0), we ask:
+    //   "What range of a[k] can still reach the already-computed interval
+    //    [a_min[k+1], a_max[k+1]] while satisfying local second-order constraints?"
+    //
+    // The coupling between consecutive stations comes from second-order constraints
+    // of the form:  acc_a·a[k+1] + acc_b·a[k] ≤ acc_max  (segment [s_k, s_{k+1}]).
+    // This is solved as a 2D LP in (a[k], a[k+1]) via lp_2d_incre_max_y.
     if verboser.is_enabled(Verbosity::Debug) {
         crate::verbosity_log!(crate::diag::Verbosity::Summary, "Backward pass started.");
     }

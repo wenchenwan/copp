@@ -1,5 +1,28 @@
 //! Shared Clarabel constraint assembly for third-order path-parameterization backends.
 //!
+//! # 模块功能概述
+//!
+//! 本模块提供 TOPP3 / COPP3 公共约束矩阵的组装函数，被 `topp3_lp`、`topp3_socp`、`copp3_socp`
+//! 三个后端共享，避免重复实现。
+//!
+//! ## 约束块组装顺序
+//! `clarabel_standard_constraint_topp3()` 按如下顺序追加约束行：
+//! ```text
+//! Step 1. 边界等式：a[0]=a_start, b[0]=b_start, a[n]=a_final, b[n]=b_final
+//! Step 2. 动力学等式（连续性约束）：
+//!         静止段：a[k]=a[k-1]（零速度段保持不变）
+//!         运动段：a[k+1] = a[k] + 2*(s[k+1]-s[k])*b[k+1]（离散导数关系）
+//!         → 打包为 ZeroConeT（等式锥）
+//! Step 3. 一阶约束：a[k] ≤ amax[k]  （包括静止段端点的特殊处理）
+//! Step 4. 二阶约束：acc_a[k]*a[k] + acc_b[k]*b[k] ≤ acc_max[k]
+//! Step 5. 线性化三阶约束：h_a[k]*a[k] + h_b[k]*b[k] + h_c[k]*c[k] ≤ h_max[k]
+//!         → Step 3~5 均打包为 NonnegativeConeT（不等式锥）
+//! ```
+//!
+//! ## Clarabel 约束格式
+//! Clarabel 要求标准锥形式：`s = b - A*x ∈ K`
+//! 其中 `s` 是松弛向量，`K` 是锥集合（ZeroConeT 表示等式，NonnegativeConeT 表示不等式）
+//!
 //! # Method identity
 //! This module is shared by:
 //! - **Time-Optimal Path Parameterization (TOPP3)** solvers,

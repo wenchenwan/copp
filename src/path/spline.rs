@@ -1,5 +1,30 @@
 //! Waypoint-based spline path construction and evaluation kernels.
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块实现 `Path::from_waypoints()` 的后端，将用户提供的路径点序列拟合为平滑样条，
+//! 并提供各阶导数的求值接口（供 `robot.with_q()` 使用）。
+//!
+//! ## 样条阶次
+//! 支持奇次样条（`p = 2m+1`，`m ≥ 1`）：
+//! - 三次 (m=1)：C² 连续，边界指定速度
+//! - 五次 (m=2)：C⁴ 连续，边界指定速度和加速度
+//! - 七次 (m=3)：C⁶ 连续，边界指定速度、加速度和加加速度
+//!
+//! ## 求解算法
+//! 内部使用 O(N) 块 Thomas 算法（Block-Thomas）求解 `m×m` 块三对角线性系统，
+//! 该系统来自 Hermite 参数化 + C^{m+1}…C^{2m} 连续性条件。
+//!
+//! ## 调用流程
+//! ```text
+//! Path::from_waypoints(waypoints, config)
+//!   └─ SplineEval::fit(waypoints, config)   ← 样条拟合（求解系数）
+//!       └─ solve_general_thomas()            ← O(N) 块三对角求解器
+//!           ↓
+//! path.eval(s)  →  PathDerivatives { q, dq, ddq, dddq }
+//!   └─ SplineEval::eval_derivatives(s)      ← 多项式求值 + 自动微分
+//! ```
+//!
 //! # Design
 //!
 //! All splines are **odd-order** (`p = 2m+1`, `m >= 1`):

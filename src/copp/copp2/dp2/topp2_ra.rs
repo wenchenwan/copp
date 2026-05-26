@@ -1,5 +1,29 @@
 //! Reachability-analysis solver for second-order time-optimal path parameterization.
 //!
+//! # 模块职责与调用流程
+//!
+//! ## 在整体管线中的位置
+//! ```text
+//! 用户：topp2_ra(problem, options)
+//!   ↓  按 verbosity 分发到 topp2_ra_core(...)
+//!   │
+//!   ├─ 步骤1：reach_set2_backward(problem, options)  [← reach_set2.rs]
+//!   │    后向 DP 传播，得到每站可行区间 [a_min[k], a_max[k]]
+//!   │    确保：在此区间内选择 a[k] 一定能到达终点边界
+//!   │
+//!   └─ 步骤2：前向贪心遍历 k = 1..=n
+//!        ① fill_acc_topp2::<true>(&mut a_b, idx_s-1)
+//!             收集段 [s_{k-1}, s_k] 上的 2 阶约束行
+//!             格式：(acc_a, acc_b, acc_max)  满足 acc_a·a[k]+acc_b·a[k-1]≤acc_max
+//!        ② lp_1d::<true>(...)
+//!             代入已知 a[k-1]=a_prev，化简为关于 a[k] 的 1D LP
+//!        ③ 与后向区间取交集 [a_min[k], a_max[k]]
+//!        ④ 选 a[k] = a_max_curr（贪心：最大化速度 → 最小化时间）
+//!   │
+//!   └─ 返回 Vec<f64> a profile（长度 n+1）
+//!        ↓
+//!        s_to_t_topp2()  →  t_to_s_topp2()  →  关节空间重建
+//!
 //! # Method identity
 //! This module implements **Reachability Analysis (RA)** for
 //! **Time-Optimal Path Parameterization (TOPP2)** and shares the same state-space
@@ -10,11 +34,6 @@
 //! - `a[k]` denotes $\dot{s}_k^2$;
 //! - backward intervals are `[a_min[k], a_max[k]]` from `reach_set2`;
 //! - forward pass selects one feasible state per station, yielding the final profile `a`.
-//!
-//! # High-level pipeline
-//! 1. Build backward reachable intervals by calling `reach_set2_backward`.
-//! 2. Run forward clipping against local constraints and backward intervals.
-//! 3. Select maximal feasible `a[k]` at each stage to recover the time-optimal profile.
 
 use super::reach_set2::{ReachSet2Options, reach_set2_backward};
 use crate::copp::copp2::formulation::Topp2Problem;
@@ -86,7 +105,13 @@ fn topp2_ra_core(
     let a_max = &reach_set.a_max;
     let a_min = &reach_set.a_min;
 
-    // Step 2. Forward pass to select the maximal feasible state at each grid point.
+    // Step 2. Forward greedy pass — select the maximum feasible a[k] at each station.
+    //
+    // Greedily selecting a[k] = a_max (within the backward reachable set) is
+    // time-optimal for TOPP2 because the objective ∫ds/√a is minimized when a
+    // is as large as possible at every station.  The backward reachable set from
+    // reach_set2_backward() already guarantees the selected a[k] can reach the
+    // terminal boundary without violating any downstream constraint.
     if verboser.is_enabled(Verbosity::Debug) {
         crate::verbosity_log!(Verbosity::Debug, "Forward pass started.");
     }
@@ -109,6 +134,10 @@ fn topp2_ra_core(
             );
         }
 
+        // Collect second-order rows on segment [s_{k-1}, s_k]:
+        //   acc_a·a[k] + acc_b·a[k-1] ≤ acc_max  (stored as triple (acc_a, acc_b, acc_max))
+        // Substitute known a[k-1] = a_prev to get a 1D LP for a[k]:
+        //   acc_a·a[k] ≤ acc_max - acc_b·a_prev
         a_b.clear();
         problem
             .constraints
@@ -209,6 +238,8 @@ fn topp2_ra_core(
             );
         }
 
+        // Greedy time-optimal selection: take the upper bound of the feasible interval.
+        // This maximizes ṡ = √a at each station, minimizing the traversal time dt = ds/ṡ.
         a_prev = a_max_curr;
         *a_curr = a_prev;
 

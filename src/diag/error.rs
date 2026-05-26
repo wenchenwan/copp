@@ -1,3 +1,26 @@
+//! COPP 错误类型定义。
+//!
+//! # 模块功能概述
+//!
+//! 本模块定义整个库的错误枚举，形成统一的错误处理层：
+//!
+//! ## 错误层次
+//! ```text
+//! CoppError                          ← 顶层错误，面向用户
+//!   ├─ ConstraintError               ← 约束存储/访问错误（自动转换）
+//!   ├─ PathError                     ← 路径构建/求值错误（自动转换）
+//!   ├─ ClarabelSolverError           ← Clarabel 内部错误（构建失败等）
+//!   ├─ ClarabelSolverStatus          ← 求解器非成功状态
+//!   ├─ InvalidInput / InvalidOptions ← 用户输入校验失败
+//!   ├─ Infeasible / Unbounded        ← 数学可行性问题
+//!   └─ Other                         ← 其他运行时错误
+//! ```
+//!
+//! ## 错误传播
+//! 所有内部模块均以 `Result<_, CoppError>` 作为返回类型。
+//! `ConstraintError` 和 `PathError` 通过 `From` 特性自动转换为 `CoppError`，
+//! 因此可以在返回 `Result<_, CoppError>` 的函数中直接用 `?` 操作符。
+
 use clarabel::solver::{SolverError as ClarabelSolverError, SolverStatus as ClarabelSolverStatus};
 use thiserror::Error;
 

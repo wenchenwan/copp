@@ -1,5 +1,32 @@
 //! 3rd-order Time-Optimal Path Parameterization (TOPP3) based on linear programming (LP).
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块是 TOPP3-LP 求解器的**优化后端**，将三阶路径参数化约束和目标
+//! 转化为 Clarabel 兼容的锥形式并以线性规划求解。
+//!
+//! ## 调用流程
+//! ```text
+//! Topp3ProblemBuilder::build_with_linearization()
+//!   ↓
+//! topp3_lp(problem, options)             ← 入口（严格模式）
+//!   └─ topp3_lp_expert(problem, options) ← 入口（专家模式，返回完整 Clarabel solution）
+//!       └─ topp3_lp_core(problem, options_verboser)
+//!           Step 1. clarabel_standard_constraint_topp3()  构建约束矩阵 A, b, cones
+//!           Step 2. clarabel_q_object_topp3_lp()          构建目标向量 q = -weight_a（最大化∫a ds）
+//!           Step 3. DefaultSolver::new().solve()           Clarabel LP 求解
+//!           Step 4. options.is_allow(status)?
+//!                     是 → clarabel_to_copp3_solution() → Some((a, b, num_stationary))
+//!                     否 → None
+//! ```
+//!
+//! ## 目标函数
+//! TOPP3-LP 的目标是**时间最优**：最大化 ∫a(s) ds（等价于最小化运动时间）。
+//! 转化为 Clarabel 最小化形式：q_k = -weight_a[k]（负权重实现最大化）。
+//!
+//! ## 决策变量布局
+//! `x = [a[0], a[1], ..., a[n], b[0], b[1], ..., b[n]]`，共 `2*(n+1)` 个变量。
+//!
 //! # Method identity
 //! This module implements the **optimization backend** for TOPP3-LP by transforming
 //! third-order path-parameterization constraints/objective into Clarabel-compatible

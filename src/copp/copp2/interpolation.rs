@@ -1,15 +1,31 @@
 //! Interpolation and profile-conversion utilities for second-order path parameterization.
 //!
+//! # 模块职责与调用流程
+//!
+//! 本模块提供「求解器输出 a(s)」→「时间域轨迹 s(t)」的完整转换链。
+//!
+//! ## 转换链（2阶求解器后处理）
+//! ```text
+//! topp2_ra() / copp2_socp()
+//!   → a: Vec<f64>        (a[k] = ṡ² at s[k], 节点值)
+//!   ↓
+//! a_to_b_topp2(s, &a)
+//!   → b: Vec<f64>        (b[k] = (a[k+1]-a[k])/(2Δs), 段值，共 n-1 个)
+//!   ↓
+//! s_to_t_topp2(s, &a, t0)
+//!   → (t_final, t_s: Vec<f64>)   (t_s[k] = t(s[k])，累积时间)
+//!   ↓
+//! t_to_s_topp2(s, &a, &t_s, InterpolationMode::UniformTimeGrid(0.0, dt, true))
+//!   → s_t: Vec<f64>      (均匀时间采样的 s(t) 值，用于关节空间重建)
+//! ```
+//!
+//! ## 与 plot_joint_trajectory.py 的对应关系
+//! s_t 即脚本中的 `traj["s_t"]`，再通过 np.interp 映射回 q/dq/ddq。
+//!
 //! # Method identity
 //! This module serves both:
 //! - **Time-Optimal Path Parameterization (TOPP2)** workflows,
 //! - **Convex-Objective Path Parameterization (COPP2)** workflows.
-//!
-//! # Scope
-//! This module provides deterministic conversions among:
-//! - path-parameter profile `a(s) = \dot{s}^2`,
-//! - derivative-like profile `b(s) = \frac{1}{2}\frac{da}{ds}` on segments,
-//! - time mapping `t(s)` and inverse sampling `s(t)`.
 //!
 //! # Conventions
 //! - Path grid uses station samples `s[0..=n]`.
@@ -72,7 +88,11 @@ pub fn s_to_t_topp2(s: &[f64], a: &[f64], t0: f64) -> (f64, Vec<f64>) {
     if s.len() < 2 || a.len() != s.len() {
         return (f64::NAN, vec![]);
     }
-    // Map s to t
+    // Trapezoidal integration of dt = ds/√a(s):
+    //   Δt_k = ∫_{s_k}^{s_{k+1}} ds/√a(s)
+    //        ≈ (s_{k+1} - s_k) / ((√a_k + √a_{k+1}) / 2)   [trapezoidal in 1/√a]
+    //        = 2·(s_{k+1} - s_k) / (√a_k + √a_{k+1})
+    // This matches the TOPP2 time parameterization exactly when a(s) is piecewise-linear.
     let mut t_s = Vec::<f64>::with_capacity(s.len()); // t_s[i] = t(s[i]), begin from t0
     let mut t_prev = t0;
     t_s.push(t_prev);
@@ -199,15 +219,30 @@ fn t_to_s_topp2_core(
 
 /// Solve `x_right` from the integral equation
 /// $dt = \int_{x_{left}}^{x_{right}} \frac{dx}{\sqrt{c_0 + c_1 x}}$.
+///
+/// Within a segment [s_k, s_{k+1}], a(s) is modeled as linear:
+///   a(s) = a_k + (a_{k+1} - a_k) / (s_{k+1} - s_k) * (s - s_k)
+///        = c0 + c1 * (s - s_k)
+/// so ds/dt = sqrt(a) = sqrt(c0 + c1*x), giving dt = dx/sqrt(c0+c1*x).
+///
+/// Closed-form inversion:
+///   If c1 ≠ 0: integral = 2/c1 * [sqrt(c0+c1*x_right) - sqrt(c0+c1*x_left)] = dt
+///              => sqrt(c0+c1*x_right) = sqrt(c0+c1*x_left) + c1*dt/2
+///              => x_right = [(sqrt(c0+c1*x_left) + c1*dt/2)² - c0] / c1
+///   If c1 = 0 (constant speed segment): dt = dx/sqrt(c0) => x_right = x_left + sqrt(c0)*dt
+///   If both zero (stopped): x_right = infinity (singularity / zero-speed degenerate)
 #[inline]
 fn inverse_2order(c0: f64, c1: f64, x_left: f64, dt: f64) -> f64 {
     if dt == 0.0 {
         x_left
     } else if c1.abs() > f64::EPSILON {
+        // Linear a(s): closed-form quadratic inversion
         (((c0 + c1 * x_left).sqrt() + 0.5 * c1 * dt).powi(2) - c0) / c1
     } else if c0.abs() > f64::EPSILON {
+        // Constant a(s): uniform path speed, s advances as sqrt(a)*dt
         x_left + c0.sqrt() * dt
     } else {
+        // a = 0 everywhere on this segment: robot is stopped, time is infinite
         f64::INFINITY
     }
 }

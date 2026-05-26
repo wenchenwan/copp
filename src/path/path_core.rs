@@ -1,3 +1,19 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// 模块说明：路径核心（path_core.rs）
+//
+// 调用位置：用户代码 → Path::from_parametric / Path::from_waypoints
+//                    → path.evaluate_up_to_3rd(&s_grid)
+//                    → 结果 PathDerivatives { q, dq, ddq, dddq } 传入
+//                       Robot::with_q(...)
+//
+// 两种表示方式：
+//   ① Parametric：给出解析闭包 q(s)，用 Jet3 自动微分求导
+//   ② Spline    ：给出离散路点矩阵，构造 Hermite 样条，用多项式求导
+//
+// 两者对外接口完全相同（evaluate_q / evaluate_up_to_2nd / evaluate_up_to_3rd），
+// 内部通过 PathRepr 枚举分发。
+// ─────────────────────────────────────────────────────────────────────────────
+
 use crate::diag::PathError;
 use crate::path::OutOfRangeMode;
 use crate::path::autodiff::Jet3;
@@ -10,10 +26,23 @@ const EPS_RANGE: f64 = 1e-12;
 
 pub type ParametricFn = Arc<dyn Fn(Jet3) -> Vec<Jet3> + Send + Sync>;
 
-/// Output of path evaluation.
+/// 路径求值的输出结果，包含各阶导数矩阵。
 ///
-/// `dq`, `ddq`, `dddq` are `None` when the evaluation did not request them
-/// (e.g. `evaluate_q` only fills `q`; `evaluate_up_to_2nd` fills `q/dq/ddq`).
+/// 每个矩阵的形状为 **(dim, N)**，其中 dim 为关节自由度数，N 为采样点数。
+///
+/// - `q`     : 路径位置矩阵 q(s)，列 j 对应采样点 s[j]
+/// - `dq`    : 一阶导数 dq/ds（对路径参数 s 求导），None 表示未请求
+/// - `ddq`   : 二阶导数 d²q/ds²，None 表示未请求
+/// - `dddq`  : 三阶导数 d³q/ds³，仅 `evaluate_up_to_3rd` 时非 None
+///
+/// 调用流程：
+///   evaluate_q()         → q 非 None，其余均为 None
+///   evaluate_up_to_2nd() → q/dq/ddq 非 None，dddq = None
+///   evaluate_up_to_3rd() → 全部非 None（TOPP3/COPP3 需要 dddq）
+///
+/// 后续消费者：
+///   Robot::with_q(&derivs.q, &derivs.dq, &derivs.ddq, derivs.dddq, 0)
+///   将这些矩阵写入 Constraints 约束缓冲区，供求解器使用。
 #[derive(Debug)]
 pub struct PathDerivatives {
     pub q: DMatrix<f64>,
@@ -30,14 +59,25 @@ enum Order {
     Three, // q, dq, ddq, dddq
 }
 
-/// Unified path abstraction over parametric and spline representations.
+/// 路径抽象，统一封装「解析参数化路径」和「样条路径」两种表示。
 ///
-/// Construct via [`Path::from_parametric`] or [`Path::from_waypoints`], then
-/// query a batch of parameter values with the `evaluate_*` family of methods.
+/// # 构建方式
 ///
-/// The valid parameter domain is `[s_min, s_max]` (set at construction time).
-/// Out-of-range behaviour is controlled by [`OutOfRangeMode`]: the default is to
-/// return an error; it can be changed to silent clamping.
+/// ```text
+/// Path::from_parametric(|s: Jet3| vec![sin(2π·s), cos(3π·s)], 0.0, 1.0)
+///   → 内部用 Jet3 自动微分计算三阶导数
+///
+/// Path::from_waypoints(&waypoints, SplineConfig::default())
+///   → 内部用 Hermite 块三对角系统拟合样条
+/// ```
+///
+/// # 求值方式
+/// 均通过 `evaluate_*` 系列方法批量求值，底层分发到 eval_parametric / eval_spline。
+///
+/// # 与约束层的连接
+/// `PathDerivatives` 的输出直接传给 `Robot::with_q()`，
+/// 后者将 dq/ddq/dddq 写入 `Constraints` 约束缓冲区，
+/// 再由 `with_axial_velocity/acceleration/jerk` 方法转换为路径域约束行。
 pub struct Path {
     dim: usize,
     s_min: f64,

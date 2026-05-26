@@ -1,5 +1,32 @@
 //! 3rd-order Time-Optimal Path Parameterization (TOPP3) based on second-order cone programming (SOCP).
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块是 TOPP3-SOCP 求解器的**优化后端**。与 TOPP3-LP 相比，TOPP3-SOCP 引入
+//! 辅助变量 `(xi, eta)` 将时间目标从线性近似升级为二阶锥形式，从而得到**更紧**的下界。
+//!
+//! ## SOCP 与 LP 的差异
+//! TOPP3-LP 目标：`min Σ (-weight_a[k] * a[k])`（线性近似时间代价）
+//! TOPP3-SOCP 目标：引入 SOC 约束 `(xi[k], eta[k], 1) ∈ SOC`，使目标更精确
+//!
+//! ## 决策变量布局
+//! `x = [a[0..=n], b[0..=n], xi[0..len_xi), eta[0..len_xi)]`
+//! 其中 `xi, eta` 是时间代价的辅助变量对
+//!
+//! ## 调用流程
+//! ```text
+//! Topp3ProblemBuilder::build_with_linearization()
+//!   ↓
+//! topp3_socp(problem, options)               ← 严格模式入口
+//!   └─ topp3_socp_expert(problem, options)   ← 专家模式入口
+//!       └─ topp3_socp_core(problem, options_verboser)
+//!           Step 1. clarabel_standard_constraint_topp3()  构建公共约束
+//!           Step 2. SOCP 特有：添加 (xi, eta) SOC 约束
+//!           Step 3. 构建目标 q（对 xi 的线性项）
+//!           Step 4. DefaultSolver::new().solve()
+//!           Step 5. options.is_allow(status) → 提取 (a, b, num_stationary)
+//! ```
+//!
 //! # Method identity
 //! This module implements the **optimization backend** for TOPP3-QP by transforming
 //! third-order path-parameterization constraints/objective into Clarabel-compatible

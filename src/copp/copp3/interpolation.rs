@@ -1,5 +1,32 @@
 //! Interpolation and profile-conversion utilities for third-order path parameterization.
 //!
+//! # 模块功能概述
+//!
+//! 本模块为 TOPP3 / COPP3 提供时间映射和轨迹采样工具，与二阶版本（`copp2/interpolation.rs`）的区别在于：
+//! - 三阶方法中 `b(s) = s̈` 是**节点值**（node-based），而非区间值
+//! - 节点间插值使用**倒二次根积分**（reciprocal square-root quadratic polynomial）
+//!
+//! ## 调用流程
+//! ```text
+//! topp3_lp / topp3_socp / copp3_socp
+//!   └─ 返回 (a, b, num_stationary)
+//!       ↓
+//! s_to_t_topp3(s, a, b, num_stationary, t0) → (t_final, t_s)
+//!   └─ 对非静止段用 integral_rsrqp() 做分段积分
+//!       分三段：起始静止段（三次律）/ 主段（倒二次根积分）/ 末尾静止段（三次律）
+//!       ↓
+//! t_to_s_topp3(s, a, b, num_stationary, t_s, mode) → s_t
+//!   └─ 对每个采样时间 t_i 调用 inverse_rsrqp() 求反函数
+//! ```
+//!
+//! ## 静止边界段（num_stationary）
+//! 起终点速度为零时，用三次速度律建模：`s(t) = s0 + (1/6)·s⃛_0·t³`
+//! `num_stationary = (head, tail)` 表示起点/终点各有多少个静止段节点
+//!
+//! ## 关键积分 `integral_rsrqp`
+//! 计算 `∫ dx / √(c₀ + c₁x + c₂x²)`，用于正向时间积分（`s → t`）
+//! 反函数 `inverse_rsrqp` 用于反向插值（`t → s`）
+//!
 //! # Method identity
 //! This module serves both:
 //! - **Time-Optimal Path Parameterization (TOPP3)** workflows,

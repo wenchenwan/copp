@@ -1,5 +1,28 @@
 //! Incremental linear-programming kernels in 1D/2D.
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块提供 TOPP2-RA 后向 DP 步骤中使用的低级 LP 求解内核。
+//!
+//! ## 调用关系
+//! ```text
+//! reach_set2::backward_pass()
+//!   └─ fill_acc_topp2()（收集每站约束行）
+//!       └─ lp_2d_incre_max_y(constraints, options)   ← 本模块核心函数
+//!           └─ 对每条新约束行做增量更新，维护当前最优 (x*, y*)
+//! ```
+//!
+//! ## LP 求解方法
+//! 使用**增量随机化 LP**（Seidel 算法的 1D/2D 特化）：
+//! - 依次加入半空间约束 `a_i·x + b_i·y ≤ c_i`
+//! - 若当前最优违反新约束，在新约束边界上做 1D LP 更新
+//! - 时间复杂度期望 O(m)，其中 m 为约束数
+//!
+//! ## 关键常数
+//! - `EPS_ZERO = 1e-9` — 近零判断阈值（分支决策）
+//! - `LP_BOUND = 1e6` — 无界方向的默认盒约束
+//! - `EPS_SCALE = 10.0` — 维度规约时容差缩放因子
+//!
 //! # Method identity
 //! The functions in this module are low-level numeric engines used by TOPP/COPP
 //! planners. They operate on half-space form constraints and provide:

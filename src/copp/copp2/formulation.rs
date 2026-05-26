@@ -1,5 +1,32 @@
 //! Problem data models and builders for second-order path parameterization.
 //!
+//! # 模块职责与调用流程
+//!
+//! 本模块是「约束容器（Constraints）」→「求解器可用的问题对象」的桥梁。
+//!
+//! ## TOPP2 构建流程
+//! ```text
+//! Robot<M>（已写入 s/q/dq/ddq + 速度/加速度/力矩约束）
+//!   ↓
+//! Topp2ProblemBuilder::new(&robot, idx_s_interval, a_boundary)
+//!   ↓  .build()          调用 validate()：检查区间合法性、边界非负性
+//!   ↓
+//! Topp2Problem { constraints: &robot.constraints, idx_s_interval, a_boundary }
+//!   ↓（只读引用，零复制）
+//! topp2_ra()       → 后向可达集 + 前向贪心 → a(s) profile
+//! reach_set2_*()   → 返回 ReachSet2 { a_max, a_min }
+//! ```
+//!
+//! ## COPP2 构建流程（需要 RobotTorque，因为目标函数可能用到力矩）
+//! ```text
+//! Robot<M: RobotTorque>
+//!   ↓
+//! Copp2ProblemBuilder::new(&robot, idx_s_interval, a_boundary, &objectives)
+//!   ↓  .build()          同时校验目标函数维度
+//!   ↓
+//! Copp2Problem → copp2_socp() → Clarabel SOCP → a(s) profile
+//! ```
+//!
 //! # Method identity
 //! This module defines validated formulation objects for:
 //! - **Time-Optimal Path Parameterization (TOPP2)**,
@@ -10,11 +37,6 @@
 //! - state profile is `a(s)=\dot{s}^2`;
 //! - boundary tuple is `a_boundary = (a_start, a_final)`;
 //! - station count is `s_len = idx_s_final - idx_s_start + 1`.
-//!
-//! # High-level pipeline
-//! 1. Construct `Topp2ProblemBuilder` or `Copp2ProblemBuilder` from caller data.
-//! 2. Run builder validation (index interval, bounds, objective compatibility).
-//! 3. Build immutable problem objects used by DP/optimization backends.
 
 use crate::copp::constraints::Constraints;
 use crate::copp::{CoppObjective, validate_copp2_objectives};

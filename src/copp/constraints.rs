@@ -1,5 +1,40 @@
 //! Constraint storage and access layer for TOPP/COPP pipelines.
 //!
+//! # 模块在系统中的位置
+//!
+//! `Constraints` 是整个求解管线的**约束数据中心**，由 `Robot` 填充后传给所有求解器。
+//!
+//! ## 数据流
+//! ```text
+//! Robot::with_s()           → 写入 s 网格
+//! Robot::with_q()           → 写入 q, dq, ddq, dddq
+//! Robot::with_axial_velocity() → 写入 amax（一阶约束）
+//! Robot::with_axial_acceleration() → 写入 acc_a, acc_b, acc_max（二阶约束）
+//! Robot::with_axial_jerk()  → 写入 jerk_a/b/c/d/max（三阶非线性约束）
+//! build_with_linearization() → 写入 jerk_a_linear, jerk_max_linear（线性化约束）
+//!   ↓
+//! Constraints（圆形缓冲区 capacity_col 列）
+//!   ├─ Topp2ProblemBuilder / Copp2ProblemBuilder（读 amax + acc + jerk_nonlinear）
+//!   └─ Topp3ProblemBuilder / Copp3ProblemBuilder（读 amax + acc + jerk_linear）
+//! ```
+//!
+//! ## 圆形缓冲区寻址
+//! 物理列索引 = `(head_col + logical_offset) % capacity_col`
+//! 其中 `logical_offset = idx_s - self.idx_s`
+//! 这允许路径被分段处理，旧数据自动被覆盖。
+//!
+//! ## 约束类型
+//! | 类型 | 数学形式 | 适用求解器 |
+//! |------|---------|-----------|
+//! | 一阶 | `0 ≤ a[k] ≤ amax[k]` | 全部 |
+//! | 二阶 | `acc_a·a + acc_b·b ≤ acc_max` | 全部 |
+//! | 三阶非线性 | `√a·(g_a·a+g_b·b+g_c·c+g_d) ≤ g_max` | 仅 reach_set2 |
+//! | 三阶线性化 | `h_a·a + h_b·b + h_c·c ≤ h_max` | TOPP3/COPP3 SOCP/LP |
+//!
+//! ## ValidRows
+//! 各类约束的有效行数按区间存储在 BTreeMap 中（按 `idx_s_right` 为键），
+//! 查询时取最小包含区间的右端点对应条目。
+//!
 //! # Method identity
 //! This module provides a circular-buffer based constraint container shared by:
 //! - **TOPP2 / COPP2** (first-order + second-order constraints),

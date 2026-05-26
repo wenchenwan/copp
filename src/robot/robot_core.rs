@@ -1,5 +1,24 @@
 //! Robot abstractions and constraint-ingestion utilities for TOPP/COPP.
 //!
+//! # 模块职责与调用位置
+//!
+//! 本模块是「机器人物理约束」→「路径域不等式」转换的核心桥梁。
+//!
+//! ## 典型调用流程
+//! ```text
+//! 用户代码
+//!   ↓  Robot::with_capacity(dim, n)          构建机器人+约束缓冲区
+//!   ↓  robot.with_s(&s_grid)                 写入路径参数离散点
+//!   ↓  robot.with_q(&q, &dq, &ddq, ...)      写入路径几何导数
+//!   ↓  robot.with_axial_velocity(max, min, 0) 速度限制 → 1阶约束 a≤amax
+//!   ↓  robot.with_axial_acceleration(...)     加速度限制 → 2阶约束 a·q''+b·q'≤αmax
+//!   ↓  robot.with_axial_jerk(...)             急动度限制 → 3阶非线性约束
+//!   ↓  robot.with_axial_torque(...)           力矩限制   → 2阶约束（需逆动力学）
+//!   ↓
+//!   Topp2ProblemBuilder::new(&robot, ...)     将 &robot.constraints 传入问题
+//!   Topp3ProblemBuilder::new(&mut robot, ...) 需要 &mut 以执行线性化
+//! ```
+//!
 //! # Method identity
 //! This module defines:
 //! - model-side traits (`RobotBasic`, `RobotTorque`),
@@ -302,7 +321,14 @@ impl<M: RobotBasic> Robot<M> {
             &axial_velocity_min,
             "axial_velocity",
         )?;
-        // Add new axial velocity constraints
+        // Velocity chain rule in path domain:
+        //   q̇_i = (dq_i/ds)·ṡ = q'_i·√a
+        // Velocity bound: v_min ≤ q̇_i ≤ v_max  =>  (q̇_i/q'_i)² ≤ a_max_i
+        // Since q'_i can be positive or negative, invert the tighter side:
+        //   dq > 0: v_max/dq is the binding upper limit  =>  a_max = (v_max/dq)²
+        //   dq < 0: v_min/dq is the binding upper limit  =>  a_max = (v_min/dq)²
+        //   dq = 0: joint has zero path derivative here, no velocity constraint on a
+        // The per-axis a_max values are then fused (min-aggregated) into the global amax.
         let mut amax_new =
             DMatrix::<f64>::from_element(self.dim(), axial_velocity_max.ncols(), f64::INFINITY);
         let func = |start_idx: usize, ncols: usize, offset: usize| {
@@ -387,6 +413,10 @@ impl<M: RobotBasic> Robot<M> {
         // Add new axial acceleration constraints
         let mut acc_a_new = DMatrix::<f64>::zeros(self.dim(), axial_acceleration_max.ncols());
         let mut acc_b_new = DMatrix::<f64>::zeros(self.dim(), axial_acceleration_max.ncols());
+        // Acceleration chain rule in path domain:
+        //   q̈ = d²q/dt² = q''·ṡ² + q'·s̈ = q''·a + q'·b
+        // So:  acc_a_new = q'' = d²q/ds²,  acc_b_new = q' = dq/ds
+        // Constraint row:  acc_a·a + acc_b·b ≤ acc_max
         let func = |start_idx: usize, ncols: usize, offset: usize| {
             acc_a_new
                 .columns_mut(offset, ncols)
@@ -472,6 +502,15 @@ impl<M: RobotBasic> Robot<M> {
         let mut jerk_b_new = DMatrix::<f64>::zeros(self.dim(), axial_jerk_max.ncols());
         let mut jerk_c_new = DMatrix::<f64>::zeros(self.dim(), axial_jerk_max.ncols());
         let jerk_d_new = DMatrix::<f64>::zeros(self.dim(), axial_jerk_max.ncols());
+        // Jerk chain rule in path domain:
+        //   q⃛ = d³q/dt³ = q'''·ṡ³ + 3q''·ṡ·s̈ + q'·s⃛
+        //      = q'''·a·ṡ + 3q''·b·ṡ + q'·c·ṡ      (since c = s⃛/ṡ)
+        //      = ṡ · (q'''·a + 3q''·b + q'·c)
+        //      = √a · (jerk_a·a + jerk_b·b + jerk_c·c + jerk_d)
+        // where: jerk_a = q''' = d³q/ds³
+        //        jerk_b = 3·q'' = 3·d²q/ds²   (factor 3 is applied by scale_mut below)
+        //        jerk_c = q'  = dq/ds
+        //        jerk_d = 0   (no constant term for axial jerk)
         let func = |start_idx: usize, ncols: usize, offset: usize| {
             jerk_a_new
                 .columns_mut(offset, ncols)
@@ -486,7 +525,7 @@ impl<M: RobotBasic> Robot<M> {
         let ncols_mat = self.constraints.capacity();
         let start_idx = self.constraints.col_at_idx_s_unchecked(start_idx_s);
         Constraints::circular_process(ncols_mat, start_idx, axial_jerk_max.ncols(), func);
-        jerk_b_new.scale_mut(3.0);
+        jerk_b_new.scale_mut(3.0); // Apply factor 3 to q'' term
         self.constraints.with_constraint_3order(
             &jerk_a_new.as_view(),
             &jerk_b_new.as_view(),
@@ -609,23 +648,36 @@ impl<M: RobotTorque> Robot<M> {
                 let q_slice = q.as_slice();
                 let dq_slice = dq.as_slice();
                 let ddq_slice = ddq.as_slice();
-                // tau(q, dq/dt, ddq/ddt) = M(q) * ddq/ddt + C(q, dq/dt) * dq/dt + g(q).
-                // tau = M(q) * (ddq/dds * a + dq/ds * b) + C(q, dq/ds * sqrt(a)) * dq/ds * sqrt(a) + g(q)
-                // tau = (M * ddq/dds + C * dq/ds) * a + M * dq/ds * b + g(q)
-                // Step 1. coeff_g = g(q) = tau(q, 0, 0)
+                // Torque decomposition in path-domain variables (a, b):
+                //   Time-domain: τ = M(q)·q̈ + C(q,q̇)·q̇ + g(q)
+                //   Path-domain chain rule:
+                //     q̇  = (dq/ds)·ṡ  = q'·√a
+                //     q̈  = (d²q/ds²)·ṡ² + (dq/ds)·s̈  = q''·a + q'·b
+                //   So: τ = M·(q''·a + q'·b) + C(q, q'·√a)·(q'·√a) + g(q)
+                //         = [M·q'' + C(q,q'·√a)·q']·a + M·q'·b + g(q)
+                //   For COPP2 where b=(a[k+1]-a[k])/(2Δs) (segment-based):
+                //     τ ≈ [M·q'' + C(q,q'√a)·q']·a + M·q'·b + g(q)
+                //   Linearize C around √a ≈ 1 (absorbed into coeff_a):
+                //     coeff_a ≈ M·q'' + C(q,q')·q'
+                //     coeff_b  = M·q'
+                //     coeff_g  = g(q)
+
+                // Step 1. coeff_g = g(q) = τ(q, 0, 0)  [gravity only]
                 self.model.inverse_dynamics(
                     q_slice,
                     &vec_zero_dim,
                     &vec_zero_dim,
                     g.as_mut_slice(),
                 );
-                // Step 2. coeff_b = M(q) * dq = tau(q, 0, dq) - g(q)
+                // Step 2. coeff_b = M(q)·q' = τ(q, 0, q') - g(q)
+                //   (passing dq'=q' as acceleration with dq=0 isolates M·q')
                 self.model
                     .inverse_dynamics(q_slice, &vec_zero_dim, dq_slice, b.as_mut_slice());
                 b.iter_mut()
                     .zip(g.iter())
                     .for_each(|(b_i, g_i)| *b_i -= *g_i);
-                // Step 3. coeff_a = M(q) * ddq + C(q, dq) * dq = tau(q, dq, ddq) - g(q)
+                // Step 3. coeff_a = M(q)·q'' + C(q,q')·q' = τ(q, q', q'') - g(q)
+                //   (full inverse dynamics minus gravity gives the a-dependent part)
                 self.model
                     .inverse_dynamics(q_slice, dq_slice, ddq_slice, a.as_mut_slice());
                 a.iter_mut()

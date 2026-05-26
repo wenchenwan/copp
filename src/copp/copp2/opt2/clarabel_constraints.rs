@@ -1,5 +1,25 @@
 //! Shared Clarabel constraint assembly for second-order path-parameterization backends.
 //!
+//! # 模块功能概述
+//!
+//! 本模块提供 TOPP2 / COPP2 公共约束矩阵的组装函数，被 `copp2_socp` 后端共享。
+//!
+//! ## 约束块组装顺序
+//! `clarabel_standard_constraint_topp2()` 按如下顺序追加约束行：
+//! ```text
+//! Step 1. 边界等式：a[0]=a_start, a[n]=a_final
+//!         → 打包为 ZeroConeT（等式锥）
+//! Step 2. 一阶约束：a[k] ≤ amax[k]（对所有内部节点）
+//! Step 3. 二阶加速度约束：acc_a[k]*a[k] + acc_b[k]*b[k] ≤ acc_max[k]
+//!         其中 b[k] = (a[k+1]-a[k]) / (2*(s[k+1]-s[k]))（有限差分导数）
+//!         → Step 2~3 打包为 NonnegativeConeT（不等式锥）
+//! ```
+//!
+//! ## 与三阶版本的区别
+//! - TOPP2 中 `b[k]` 不是决策变量，而是由 `a[k], a[k+1]` 推导的辅助量
+//! - 因此 TOPP2 只有 `n+1` 个决策变量（仅 a[0..=n]）
+//! - TOPP3 中 `b[k]` 是独立决策变量，决策向量为 `[a[0..=n], b[0..=n]]`
+//!
 //! # Method identity
 //! This module is shared by:
 //! - **Time-Optimal Path Parameterization (TOPP2)** solvers,

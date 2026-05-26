@@ -1,5 +1,34 @@
 //! 2nd-order Convex-Objective Path Parameterization (COPP2) based on second-order cone programming (SOCP).
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块是 COPP2-SOCP 求解器的**优化后端**，在二阶约束框架下支持凸目标组合。
+//!
+//! ## COPP2 与 TOPP2 的差异
+//! TOPP2-RA 使用贪心 DP 隐式最大化 a（时间最优），COPP2-SOCP 通过 Clarabel SOCP
+//! 显式求解带多目标组合的凸优化问题：
+//! - `Time(w)` — 最小化时间（引入 SOC 辅助变量 xi, eta）
+//! - `ThermalEnergy(w, ν)` — 最小化热损耗（需要逆动力学）
+//! - `TotalVariationTorque(w, ν)` — 最小化力矩变化幅度
+//! - `Linear(w, α, β)` — 用户自定义线性代价
+//!
+//! ## 决策变量布局
+//! `x = [a[0], a[1], ..., a[n], x_others]`
+//! `x_others` 是各目标引入的辅助变量（如 SOC slack 变量对）
+//!
+//! ## 调用流程
+//! ```text
+//! Copp2ProblemBuilder::build()
+//!   ↓
+//! copp2_socp(problem, options)               ← 严格模式入口
+//!   └─ copp2_socp_expert(problem, options)   ← 专家模式入口
+//!       └─ copp2_socp_core(problem, options_verboser)
+//!           Step 1. clarabel_standard_constraint_topp2()  构建二阶约束（amax + acc）
+//!           Step 2. 对每个 CoppObjective 追加目标项和约束
+//!           Step 3. DefaultSolver::new().solve()
+//!           Step 4. options.is_allow(status) → clarabel_to_copp2_solution()
+//! ```
+//!
 //! # Method identity
 //! This module implements the **optimization backend** for COPP2 by transforming path-parameterization
 //! constraints/objectives into a Clarabel-compatible conic form and solving it with SOCP.

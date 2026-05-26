@@ -1,5 +1,41 @@
 //! 3rd-order Convex-Objective Path Parameterization (COPP3) based on second-order cone programming (SOCP).
 //!
+//! # 模块在系统中的位置
+//!
+//! 本模块是 COPP3-SOCP 求解器的**优化后端**，在 TOPP3 基础上叠加凸目标函数。
+//!
+//! ## COPP3 与 TOPP3 的差异
+//! TOPP3 只有时间目标（或 LP 近似），COPP3 支持多目标组合：
+//! - `Time(w)` — 时间最优（与 TOPP3-SOCP 相同）
+//! - `ThermalEnergy(w, ν)` — 最小化电机热损耗（∫Σ(τ_i·ν_i)²/√a ds）
+//! - `TotalVariationTorque(w, ν)` — 最小化力矩全变差（减少冲击）
+//! - `Linear(w, α, β)` — 用户自定义线性代价
+//!
+//! ## 决策变量布局
+//! `x = [a[0..=n], b[0..=n], x_others]`
+//! 其中 `x_others` 是各目标引入的辅助变量（如热能目标引入的 SOC 辅助变量）
+//!
+//! ## 调用流程
+//! ```text
+//! Copp3ProblemBuilder::build_with_linearization()
+//!   ↓
+//! copp3_socp(problem, options)               ← 严格模式入口
+//!   └─ copp3_socp_expert(problem, options)   ← 专家模式入口
+//!       └─ copp3_socp_core(problem, options_verboser)
+//!           Step 1. clarabel_standard_constraint_topp3()  构建公共 TOPP3 约束
+//!           Step 2. 对每个 CoppObjective 追加约束和目标项：
+//!                   Time          → SOC(xi,eta)辅助变量 + q[xi] = weight
+//!                   ThermalEnergy → 力矩系数计算 + SOC 约束
+//!                   TotalVariation→ 差分辅助变量 + NonnegativeCone
+//!                   Linear        → 直接累加到 q[a], q[b]
+//!           Step 3. DefaultSolver::new().solve()
+//!           Step 4. options.is_allow(status) → 提取 (a, b, num_stationary)
+//! ```
+//!
+//! ## 依赖
+//! 该模块要求 `Copp3Problem` 携带实现了 `RobotTorque` trait 的机器人对象，
+//! 因为热能/全变差目标需要逆动力学（力矩系数 `coeff_a`, `coeff_b`）。
+//!
 //! # Method identity
 //! This module implements the **optimization backend** for COPP3 by transforming
 //! third-order path-parameterization constraints/objectives into Clarabel-compatible
